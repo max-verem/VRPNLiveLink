@@ -6,7 +6,9 @@ public class VRPNLiveLink : ModuleRules
 {
 	public VRPNLiveLink(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+        bEnableExceptions = true;
+
+        PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 		
         PublicIncludePaths.AddRange
         (
