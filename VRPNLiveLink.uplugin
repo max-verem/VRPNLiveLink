@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "VRPNLiveLink",
+	"Description": "LiveLink Source for receiving VRPN data",
+	"Category": "Animation",
+	"CreatedBy": "Maksym Veremeyenko",
+	"CreatedByURL": "https://github.com/max-verem/VRPNLiveLink",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "VRPNLiveLink",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
