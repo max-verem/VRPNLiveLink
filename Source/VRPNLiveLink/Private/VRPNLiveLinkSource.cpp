@@ -115,7 +115,7 @@ uint32 FVRPNLiveLinkSource::Run()
 
     while (!Stopping)
     {
-        FPlatformProcess::Sleep(0.01);
+//        FPlatformProcess::Sleep(0.01);
         tkr->mainloop();
     }
 
