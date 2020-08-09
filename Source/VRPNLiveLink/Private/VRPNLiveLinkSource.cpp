@@ -21,8 +21,8 @@
 
 FVRPNLiveLinkSource::FVRPNLiveLinkSource(FText InEndpoint)
 : Stopping(false)
+, Client(nullptr)
 , Thread(nullptr)
-, WaitTime(FTimespan::FromMilliseconds(10))
 {
 	// defaults
 	DeviceEndpoint = InEndpoint;
@@ -66,9 +66,14 @@ bool FVRPNLiveLinkSource::RequestSourceShutdown()
 
 void FVRPNLiveLinkSource::Start()
 {
-	ThreadName = "VRPN Receiver ";
-	ThreadName.AppendInt(FAsyncThreadIndex::GetNext());
-	Thread = FRunnableThread::Create(this, *ThreadName, 128 * 1024, TPri_AboveNormal, FPlatformAffinity::GetPoolThreadMask());
+    Stopping = false;
+
+    if (Thread == nullptr)
+    {
+        ThreadName = "VRPN Receiver ";
+        ThreadName.AppendInt(FAsyncThreadIndex::GetNext());
+        Thread = FRunnableThread::Create(this, *ThreadName, 128 * 1024, TPri_AboveNormal, FPlatformAffinity::GetPoolThreadMask());
+    }
 }
 
 void FVRPNLiveLinkSource::Stop()
@@ -78,30 +83,34 @@ void FVRPNLiveLinkSource::Stop()
     if (Thread != nullptr)
     {
         Thread->WaitForCompletion();
-        delete Thread;
         Thread = nullptr;
     }
-
 }
 
 void FVRPNLiveLinkSource::HandleTrackerCallback(void* p)
 {
     vrpn_TRACKERCB* t = (vrpn_TRACKERCB*)p;
 
-    TSharedPtr<TArray<double>, ESPMode::ThreadSafe> ReceivedData = MakeShareable(new TArray<double>());
-    ReceivedData.Get()->Add(t->pos[0]);
-    ReceivedData.Get()->Add(t->pos[1]);
-    ReceivedData.Get()->Add(t->pos[2]);
-    ReceivedData.Get()->Add(t->quat[0]);
-    ReceivedData.Get()->Add(t->quat[1]);
-    ReceivedData.Get()->Add(t->quat[2]);
-    ReceivedData.Get()->Add(t->quat[3]);
-    AsyncTask(ENamedThreads::GameThread, [this, ReceivedData]() { HandleReceivedData(ReceivedData); });
+    if (!IsSourceStillValid())
+        return;
+
+    FScopeLock lock(&currentLock);
+
+    currentLocation.X = t->pos[0] * 100;
+    currentLocation.Y = t->pos[1] * 100;
+    currentLocation.Z = t->pos[2] * 100;
+
+    currentQuat.X = t->quat[0];
+    currentQuat.Y = t->quat[1];
+    currentQuat.Z = t->quat[2];
+    currentQuat.W = t->quat[3];
 }
 
 void VRPN_CALLBACK handle_tracker(void* userData, const vrpn_TRACKERCB t)
 {
-    ((FVRPNLiveLinkSource*)userData)->HandleTrackerCallback((void*)&t);
+    FVRPNLiveLinkSource* ctx = (FVRPNLiveLinkSource*)userData;
+
+    ctx->HandleTrackerCallback((void*)&t);
 }
 
 uint32 FVRPNLiveLinkSource::Run()
@@ -111,48 +120,40 @@ uint32 FVRPNLiveLinkSource::Run()
     std::string conn_std = std::string(TCHAR_TO_UTF8(*conn_fs));
         
     tkr = new vrpn_Tracker_Remote(conn_std.c_str());
+
     tkr->register_change_handler(this, handle_tracker);
 
     while (!Stopping)
-    {
-//        FPlatformProcess::Sleep(0.01);
         tkr->mainloop();
-    }
 
     delete tkr;
 
     return 0;
 }
 
-void FVRPNLiveLinkSource::HandleReceivedData(TSharedPtr<TArray<double>, ESPMode::ThreadSafe> ReceivedData)
+void FVRPNLiveLinkSource::Update()
 {
-    int i = 0;
-    double buf[7];
+    if (Client)
+    {
+        FName SubjectName = FName(DeviceEndpoint.ToString());
 
-    for (double& d : *ReceivedData.Get())
-        buf[i++] = d;
+        FVector tScale = FVector(1.0, 1.0, 1.0);
+        FTransform tTransform;
+        
+        {
+            FScopeLock lock(&currentLock);
+            tTransform = FTransform(currentQuat.Inverse(), currentLocation, tScale);
+        };
 
-    FName SubjectName(DeviceEndpoint.ToString());
+        FLiveLinkStaticDataStruct TransformStaticDataStruct = FLiveLinkStaticDataStruct(FLiveLinkTransformStaticData::StaticStruct());
+        FLiveLinkTransformStaticData& TransformStaticData = *TransformStaticDataStruct.Cast<FLiveLinkTransformStaticData>();
+        Client->PushSubjectStaticData_AnyThread({ SourceGuid, SubjectName }, ULiveLinkTransformRole::StaticClass(), MoveTemp(TransformStaticDataStruct));
 
-    FVector tLocation = FVector(buf[0] * 100, buf[1] * 100, buf[2] * 100);
-
-    FQuat tQuat;
-    tQuat.X = buf[3];
-    tQuat.Y = buf[4];
-    tQuat.Z = buf[5];
-    tQuat.W = buf[6];
-
-    FVector tScale = FVector(1.0, 1.0, 1.0);
-    FTransform tTransform = FTransform(tQuat.Inverse(), tLocation, tScale);
-
-    FLiveLinkStaticDataStruct TransformStaticDataStruct = FLiveLinkStaticDataStruct(FLiveLinkTransformStaticData::StaticStruct());
-    FLiveLinkTransformStaticData& TransformStaticData = *TransformStaticDataStruct.Cast<FLiveLinkTransformStaticData>();
-    Client->PushSubjectStaticData_AnyThread({ SourceGuid, SubjectName }, ULiveLinkTransformRole::StaticClass(), MoveTemp(TransformStaticDataStruct));
-
-    FLiveLinkFrameDataStruct TransformFrameDataStruct = FLiveLinkFrameDataStruct(FLiveLinkTransformFrameData::StaticStruct());
-    FLiveLinkTransformFrameData& TransformFrameData = *TransformFrameDataStruct.Cast<FLiveLinkTransformFrameData>();
-    TransformFrameData.Transform = tTransform;
-    Client->PushSubjectFrameData_AnyThread({ SourceGuid, SubjectName }, MoveTemp(TransformFrameDataStruct));
+        FLiveLinkFrameDataStruct TransformFrameDataStruct = FLiveLinkFrameDataStruct(FLiveLinkTransformFrameData::StaticStruct());
+        FLiveLinkTransformFrameData& TransformFrameData = *TransformFrameDataStruct.Cast<FLiveLinkTransformFrameData>();
+        TransformFrameData.Transform = tTransform;
+        Client->PushSubjectFrameData_AnyThread({ SourceGuid, SubjectName }, MoveTemp(TransformFrameDataStruct));
+    }
 }
 
 #undef LOCTEXT_NAMESPACE
